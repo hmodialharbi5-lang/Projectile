@@ -3,30 +3,19 @@
   <PropertyGroup>
     <TargetFramework>net9.0</TargetFramework>
     <LangVersion>latest</LangVersion>
-    <Nullable>enable</Nullable>
-    <ImplicitUsings>enable</ImplicitUsings>
+
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>enable>
 
     <AssemblyName>BossProjectileMultiplier</AssemblyName>
     <RootNamespace>BossProjectileMultiplier</RootNamespace>
 
-    <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+    <OutputPath>bin/Release/</OutputPath>
   </PropertyGroup>
 
   <ItemGroup>
-    <Reference Include="TerrariaServer">
-      <HintPath>lib/TerrariaServer.dll</HintPath>
-      <Private>false</Private>
-    </Reference>
-
-    <Reference Include="TShockAPI">
-      <HintPath>lib/TShockAPI.dll</HintPath>
-      <Private>false</Private>
-    </Reference>
-
-    <Reference Include="TerrariaApi.Server">
-      <HintPath>lib/TerrariaApi.Server.dll</HintPath>
-      <Private>false</Private>
-    </Reference>
+    <PackageReference Include="TShock" Version="6.1.0" />
+    <PackageReference Include="TSAPI" Version="6.1.0" />
   </ItemGroup>
 
 </Project>
