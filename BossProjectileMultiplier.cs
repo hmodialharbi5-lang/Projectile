@@ -2,7 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using Microsoft.Xna.Framework;
 using Terraria;
+using Terraria.DataStructures;
 using TerrariaApi.Server;
 using TShockAPI;
 using TShockAPI.Hooks;
@@ -15,23 +17,29 @@ namespace BossProjectileMultiplier
         public override string Name => "Boss Projectile Multiplier";
         public override string Author => "OpenAI";
         public override string Description =>
-            "Increases a player's projectile multiplier whenever they defeat a boss.";
+            "Multiplies player projectiles based on boss kills.";
 
-        public override Version Version => new Version(1, 0, 0);
+        public override Version Version => new Version(2, 0, 0);
 
         private const string Permission = "bpm.admin";
         private const int DefaultMultiplier = 1;
         private const int MaximumMultiplier = 999;
 
+        // Distance between projectiles in the formation.
+        private const float GridSpacing = 18f;
+
         private readonly Dictionary<string, int> multipliers =
-            new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            new Dictionary<string, int>(
+                StringComparer.OrdinalIgnoreCase);
 
         private readonly object sync = new object();
 
-        private string DataFile =>
-            Path.Combine(TShock.SavePath, "BossProjectileMultiplier.txt");
-
         private bool Enabled = true;
+
+        private string DataFile =>
+            Path.Combine(
+                TShock.SavePath,
+                "BossProjectileMultiplier.txt");
 
         public BossProjectileMultiplierPlugin(Main game)
             : base(game)
@@ -46,20 +54,20 @@ namespace BossProjectileMultiplier
 
             ServerApi.Hooks.ServerLeave.Register(
                 this,
-                OnPlayerLeave
-            );
+                OnPlayerLeave);
+
+            // REAL TShock 6.1.0 projectile hook.
+            GetDataHandlers.NewProjectile +=
+                OnNewProjectile;
 
             Commands.ChatCommands.Add(
                 new Command(
                     Permission,
                     BpmCommand,
-                    "bpm"
-                )
-            );
+                    "bpm"));
 
             TShock.Log.ConsoleInfo(
-                "[BossProjectileMultiplier] Loaded."
-            );
+                "[BPM] Boss Projectile Multiplier loaded.");
         }
 
         private void OnReload(ReloadEventArgs args)
@@ -67,8 +75,7 @@ namespace BossProjectileMultiplier
             LoadData();
 
             args.Player.SendSuccessMessage(
-                "[BPM] Data reloaded."
-            );
+                "[BPM] Data reloaded.");
         }
 
         private void OnPlayerLeave(LeaveEventArgs args)
@@ -76,13 +83,196 @@ namespace BossProjectileMultiplier
             SaveData();
         }
 
+        // ============================================================
+        // PROJECTILE MULTIPLICATION
+        // ============================================================
+
+        private void OnNewProjectile(
+            GetDataHandlers.NewProjectileEventArgs args)
+        {
+            if (!Enabled)
+                return;
+
+            TSPlayer player = args.Player;
+
+            if (player == null || !player.Active)
+                return;
+
+            // Only multiply projectiles owned by the player
+            // who fired them.
+            if (args.Owner != player.Index)
+                return;
+
+            int multiplier = GetMultiplier(player);
+
+            if (multiplier <= 1)
+                return;
+
+            // Don't modify the original projectile.
+            // We only create multiplier - 1 additional projectiles.
+            int extraProjectiles = multiplier - 1;
+
+            if (extraProjectiles <= 0)
+                return;
+
+            SpawnFormation(args, extraProjectiles);
+        }
+
+        private void SpawnFormation(
+            GetDataHandlers.NewProjectileEventArgs args,
+            int extraProjectiles)
+        {
+            Vector2 velocity = args.Velocity;
+
+            if (velocity.LengthSquared() < 0.0001f)
+                return;
+
+            // Perpendicular direction to projectile movement.
+            Vector2 perpendicular =
+                new Vector2(
+                    -velocity.Y,
+                    velocity.X);
+
+            perpendicular.Normalize();
+
+            int total =
+                extraProjectiles + 1;
+
+            // Maximum 5 rows.
+            // Columns increase automatically as the multiplier grows.
+            int columns =
+                (int)Math.Ceiling(total / 5.0);
+
+            if (columns < 1)
+                columns = 1;
+
+            int rows =
+                (int)Math.Ceiling(
+                    total / (double)columns);
+
+            if (rows < 1)
+                rows = 1;
+
+            // Keep the grid compact and centered as much as possible.
+            //
+            // Examples:
+            //
+            // 2  = 2 x 1
+            // 6  = 2 x 3
+            // 10 = 2 x 5
+            // 11 = 3 x 4
+            // 20 = 4 x 5
+            // 25 = 5 x 5
+            // 30 = 6 x 5
+
+            int spawned = 0;
+
+            // Choose the grid slot nearest the original projectile
+            // to represent the original projectile.
+            int originalColumn =
+                (columns - 1) / 2;
+
+            int originalRow =
+                (rows - 1) / 2;
+
+            for (int row = 0; row < rows; row++)
+            {
+                for (int column = 0;
+                     column < columns;
+                     column++)
+                {
+                    if (spawned >= extraProjectiles)
+                        return;
+
+                    // Skip the grid position occupied by
+                    // the original projectile.
+                    if (column == originalColumn &&
+                        row == originalRow)
+                    {
+                        continue;
+                    }
+
+                    float columnOffset =
+                        column -
+                        ((columns - 1) / 2f);
+
+                    float rowOffset =
+                        row -
+                        ((rows - 1) / 2f);
+
+                    // Horizontal offset across the formation.
+                    Vector2 offset =
+                        perpendicular *
+                        (columnOffset * GridSpacing);
+
+                    // Small forward/backward row offset.
+                    // This keeps the formation visually separated
+                    // without changing projectile direction.
+                    Vector2 forward =
+                        velocity;
+
+                    forward.Normalize();
+
+                    offset +=
+                        forward *
+                        (rowOffset * GridSpacing);
+
+                    Vector2 spawnPosition =
+                        args.Position + offset;
+
+                    float ai0 =
+                        args.Ai != null &&
+                        args.Ai.Length > 0
+                            ? args.Ai[0]
+                            : 0f;
+
+                    float ai1 =
+                        args.Ai != null &&
+                        args.Ai.Length > 1
+                            ? args.Ai[1]
+                            : 0f;
+
+                    try
+                    {
+                        Projectile.NewProjectile(
+                            new EntitySource_Misc(
+                                "BossProjectileMultiplier"),
+                            spawnPosition,
+                            velocity,
+                            args.Type,
+                            args.Damage,
+                            args.Knockback,
+                            args.Owner,
+                            ai0,
+                            ai1);
+
+                        spawned++;
+                    }
+                    catch (Exception ex)
+                    {
+                        TShock.Log.Error(
+                            "[BPM] Failed to spawn " +
+                            "multiplied projectile: " +
+                            ex);
+
+                        return;
+                    }
+                }
+            }
+        }
+
+        // ============================================================
+        // MULTIPLIER DATA
+        // ============================================================
+
         private string GetPlayerKey(TSPlayer player)
         {
             if (player.Account != null &&
-                !string.IsNullOrWhiteSpace(player.Account.Name))
+                !string.IsNullOrWhiteSpace(
+                    player.Account.Name))
             {
                 return "account:" +
-                       player.Account.Name.ToLowerInvariant();
+                    player.Account.Name.ToLowerInvariant();
             }
 
             return "uuid:" + player.UUID;
@@ -90,28 +280,35 @@ namespace BossProjectileMultiplier
 
         private int GetMultiplier(TSPlayer player)
         {
-            string key = GetPlayerKey(player);
+            string key =
+                GetPlayerKey(player);
 
             lock (sync)
             {
-                if (multipliers.TryGetValue(key, out int value))
+                if (multipliers.TryGetValue(
+                    key,
+                    out int value))
+                {
                     return value;
+                }
             }
 
             return DefaultMultiplier;
         }
 
-        private void SetMultiplier(TSPlayer player, int value)
+        private void SetMultiplier(
+            TSPlayer player,
+            int value)
         {
             value = Math.Clamp(
                 value,
                 DefaultMultiplier,
-                MaximumMultiplier
-            );
+                MaximumMultiplier);
 
             lock (sync)
             {
-                multipliers[GetPlayerKey(player)] = value;
+                multipliers[
+                    GetPlayerKey(player)] = value;
             }
 
             SaveData();
@@ -119,28 +316,33 @@ namespace BossProjectileMultiplier
 
         private void AddBossKill(TSPlayer player)
         {
-            if (!Enabled || player == null || !player.Active)
+            if (!Enabled ||
+                player == null ||
+                !player.Active)
+            {
                 return;
+            }
 
-            int oldValue = GetMultiplier(player);
+            int oldValue =
+                GetMultiplier(player);
 
-            int newValue = Math.Min(
-                MaximumMultiplier,
-                oldValue + 1
-            );
+            int newValue =
+                Math.Min(
+                    MaximumMultiplier,
+                    oldValue + 1);
 
-            SetMultiplier(player, newValue);
+            SetMultiplier(
+                player,
+                newValue);
 
             player.SendSuccessMessage(
-                $"[BPM] Boss defeated! " +
-                $"Your projectile count is now {newValue}."
-            );
+                "[BPM] Boss defeated! " +
+                $"Your projectile multiplier is now {newValue}x.");
         }
 
-        private int GetPlayerProjectileCount(TSPlayer player)
-        {
-            return GetMultiplier(player);
-        }
+        // ============================================================
+        // COMMANDS
+        // ============================================================
 
         private void BpmCommand(CommandArgs args)
         {
@@ -150,10 +352,11 @@ namespace BossProjectileMultiplier
                 return;
             }
 
-            string subcommand =
-                args.Parameters[0].ToLowerInvariant();
+            string command =
+                args.Parameters[0]
+                    .ToLowerInvariant();
 
-            switch (subcommand)
+            switch (command)
             {
                 case "on":
                     if (!RequireAdmin(args))
@@ -163,8 +366,7 @@ namespace BossProjectileMultiplier
                     SaveData();
 
                     args.Player.SendSuccessMessage(
-                        "[BPM] Enabled."
-                    );
+                        "[BPM] Enabled.");
                     break;
 
                 case "off":
@@ -175,26 +377,23 @@ namespace BossProjectileMultiplier
                     SaveData();
 
                     args.Player.SendSuccessMessage(
-                        "[BPM] Disabled. Player progress was NOT reset."
-                    );
+                        "[BPM] Disabled.");
                     break;
 
                 case "status":
                     args.Player.SendInfoMessage(
-                        $"[BPM] Status: {(Enabled ? "ON" : "OFF")}"
-                    );
+                        $"[BPM] Status: " +
+                        $"{(Enabled ? "ON" : "OFF")}");
 
                     args.Player.SendInfoMessage(
-                        $"[BPM] Your multiplier: " +
-                        $"{GetMultiplier(args.Player)}"
-                    );
+                        $"[BPM] Multiplier: " +
+                        $"{GetMultiplier(args.Player)}x");
                     break;
 
                 case "count":
                     args.Player.SendInfoMessage(
-                        $"[BPM] Your projectile count: " +
-                        $"{GetMultiplier(args.Player)}"
-                    );
+                        $"[BPM] Projectile count: " +
+                        $"{GetMultiplier(args.Player)}");
                     break;
 
                 case "set":
@@ -212,8 +411,7 @@ namespace BossProjectileMultiplier
                     LoadData();
 
                     args.Player.SendSuccessMessage(
-                        "[BPM] Reloaded."
-                    );
+                        "[BPM] Reloaded.");
                     break;
 
                 default:
@@ -222,19 +420,23 @@ namespace BossProjectileMultiplier
             }
         }
 
-        private bool RequireAdmin(CommandArgs args)
+        private bool RequireAdmin(
+            CommandArgs args)
         {
-            if (args.Player.HasPermission(Permission))
+            if (args.Player.HasPermission(
+                Permission))
+            {
                 return true;
+            }
 
             args.Player.SendErrorMessage(
-                "You need the bpm.admin permission."
-            );
+                "You need the bpm.admin permission.");
 
             return false;
         }
 
-        private void SetCommand(CommandArgs args)
+        private void SetCommand(
+            CommandArgs args)
         {
             if (!RequireAdmin(args))
                 return;
@@ -242,8 +444,7 @@ namespace BossProjectileMultiplier
             if (args.Parameters.Count < 3)
             {
                 args.Player.SendErrorMessage(
-                    "/bpm set <player> <number>"
-                );
+                    "/bpm set <player> <number>");
                 return;
             }
 
@@ -252,8 +453,7 @@ namespace BossProjectileMultiplier
                     out int amount))
             {
                 args.Player.SendErrorMessage(
-                    "The number must be an integer."
-                );
+                    "The number must be an integer.");
                 return;
             }
 
@@ -262,34 +462,8 @@ namespace BossProjectileMultiplier
             {
                 args.Player.SendErrorMessage(
                     $"Number must be between " +
-                    $"{DefaultMultiplier} and {MaximumMultiplier}."
-                );
-                return;
-            }
-
-            TSPlayer? target =
-                FindPlayer(args.Parameters[1]);
-
-            if (target == null)
-                return;
-
-            SetMultiplier(target, amount);
-
-            args.Player.SendSuccessMessage(
-                $"[BPM] {target.Name} is now at {amount}."
-            );
-        }
-
-        private void ResetCommand(CommandArgs args)
-        {
-            if (!RequireAdmin(args))
-                return;
-
-            if (args.Parameters.Count < 2)
-            {
-                args.Player.SendErrorMessage(
-                    "/bpm reset <player>"
-                );
+                    $"{DefaultMultiplier} and " +
+                    $"{MaximumMultiplier}.");
                 return;
             }
 
@@ -301,17 +475,43 @@ namespace BossProjectileMultiplier
 
             SetMultiplier(
                 target,
-                DefaultMultiplier
-            );
+                amount);
 
             args.Player.SendSuccessMessage(
-                $"[BPM] {target.Name} was reset to 1."
-            );
+                $"[BPM] {target.Name} is now {amount}x.");
         }
 
-        private TSPlayer? FindPlayer(string name)
+        private void ResetCommand(
+            CommandArgs args)
         {
-            IEnumerable<TSPlayer> matches =
+            if (!RequireAdmin(args))
+                return;
+
+            if (args.Parameters.Count < 2)
+            {
+                args.Player.SendErrorMessage(
+                    "/bpm reset <player>");
+                return;
+            }
+
+            TSPlayer? target =
+                FindPlayer(args.Parameters[1]);
+
+            if (target == null)
+                return;
+
+            SetMultiplier(
+                target,
+                DefaultMultiplier);
+
+            args.Player.SendSuccessMessage(
+                $"[BPM] {target.Name} reset to 1x.");
+        }
+
+        private TSPlayer? FindPlayer(
+            string name)
+        {
+            TSPlayer[] players =
                 TShock.Players
                     .Where(p =>
                         p != null &&
@@ -319,22 +519,18 @@ namespace BossProjectileMultiplier
                         (
                             p.Name.Equals(
                                 name,
-                                StringComparison.OrdinalIgnoreCase
-                            )
+                                StringComparison.OrdinalIgnoreCase)
                             ||
                             p.Name.IndexOf(
                                 name,
-                                StringComparison.OrdinalIgnoreCase
-                            ) >= 0
-                        ));
-
-            TSPlayer[] players = matches.ToArray();
+                                StringComparison.OrdinalIgnoreCase)
+                            >= 0))
+                    .ToArray();
 
             if (players.Length == 0)
             {
                 TSPlayer.All.SendErrorMessage(
-                    $"Player '{name}' was not found."
-                );
+                    $"Player '{name}' was not found.");
 
                 return null;
             }
@@ -342,8 +538,7 @@ namespace BossProjectileMultiplier
             if (players.Length > 1)
             {
                 TSPlayer.All.SendErrorMessage(
-                    "Multiple players matched that name."
-                );
+                    "Multiple players matched that name.");
 
                 return null;
             }
@@ -351,43 +546,38 @@ namespace BossProjectileMultiplier
             return players[0];
         }
 
-        private void ShowHelp(TSPlayer player)
+        private void ShowHelp(
+            TSPlayer player)
         {
             player.SendInfoMessage(
-                "[BPM] Commands:"
-            );
+                "[BPM] /bpm count");
 
             player.SendInfoMessage(
-                "/bpm count"
-            );
+                "[BPM] /bpm status");
 
-            player.SendInfoMessage(
-                "/bpm status"
-            );
-
-            if (player.HasPermission(Permission))
+            if (player.HasPermission(
+                Permission))
             {
                 player.SendInfoMessage(
-                    "/bpm on"
-                );
+                    "[BPM] /bpm on");
 
                 player.SendInfoMessage(
-                    "/bpm off"
-                );
+                    "[BPM] /bpm off");
 
                 player.SendInfoMessage(
-                    "/bpm set <player> <number>"
-                );
+                    "[BPM] /bpm set <player> <number>");
 
                 player.SendInfoMessage(
-                    "/bpm reset <player>"
-                );
+                    "[BPM] /bpm reset <player>");
 
                 player.SendInfoMessage(
-                    "/bpm reload"
-                );
+                    "[BPM] /bpm reload");
             }
         }
+
+        // ============================================================
+        // SAVE / LOAD
+        // ============================================================
 
         private void LoadData()
         {
@@ -414,12 +604,12 @@ namespace BossProjectileMultiplier
                             string value =
                                 line.Substring(9);
 
-                            Enabled =
-                                bool.TryParse(
-                                    value,
-                                    out bool enabled)
-                                    ? enabled
-                                    : true;
+                            if (bool.TryParse(
+                                value,
+                                out bool enabled))
+                            {
+                                Enabled = enabled;
+                            }
 
                             continue;
                         }
@@ -431,15 +621,17 @@ namespace BossProjectileMultiplier
                             continue;
 
                         if (!int.TryParse(
-                                parts[1],
-                                out int multiplier))
+                            parts[1],
+                            out int multiplier))
+                        {
                             continue;
+                        }
 
-                        multiplier = Math.Clamp(
-                            multiplier,
-                            DefaultMultiplier,
-                            MaximumMultiplier
-                        );
+                        multiplier =
+                            Math.Clamp(
+                                multiplier,
+                                DefaultMultiplier,
+                                MaximumMultiplier);
 
                         multipliers[parts[0]] =
                             multiplier;
@@ -449,8 +641,7 @@ namespace BossProjectileMultiplier
                 {
                     TShock.Log.Error(
                         "[BPM] Failed to load data: " +
-                        ex
-                    );
+                        ex);
                 }
             }
         }
@@ -462,19 +653,18 @@ namespace BossProjectileMultiplier
                 try
                 {
                     Directory.CreateDirectory(
-                        TShock.SavePath
-                    );
+                        TShock.SavePath);
 
                     using StreamWriter writer =
                         new StreamWriter(
                             DataFile,
-                            false
-                        );
+                            false);
 
                     writer.WriteLine(
                         "#enabled=" +
-                        Enabled.ToString().ToLowerInvariant()
-                    );
+                        Enabled
+                            .ToString()
+                            .ToLowerInvariant());
 
                     foreach (
                         KeyValuePair<string, int> pair
@@ -484,16 +674,14 @@ namespace BossProjectileMultiplier
                         writer.WriteLine(
                             pair.Key +
                             "\t" +
-                            pair.Value
-                        );
+                            pair.Value);
                     }
                 }
                 catch (Exception ex)
                 {
                     TShock.Log.Error(
                         "[BPM] Failed to save data: " +
-                        ex
-                    );
+                        ex);
                 }
             }
         }
@@ -510,8 +698,10 @@ namespace BossProjectileMultiplier
 
                 ServerApi.Hooks.ServerLeave.Deregister(
                     this,
-                    OnPlayerLeave
-                );
+                    OnPlayerLeave);
+
+                GetDataHandlers.NewProjectile -=
+                    OnNewProjectile;
             }
 
             base.Dispose(disposing);
