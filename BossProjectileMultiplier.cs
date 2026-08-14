@@ -16,6 +16,7 @@ namespace BossProjectileMultiplier
         public override string Author => "OpenAI";
         public override string Description =>
             "Increases a player's projectile multiplier whenever they defeat a boss.";
+
         public override Version Version => new Version(1, 0, 0);
 
         private const string Permission = "bpm.admin";
@@ -136,17 +137,6 @@ namespace BossProjectileMultiplier
             );
         }
 
-        /*
-         * This method is intentionally separate from the projectile-spawning
-         * code. The actual projectile duplication should happen when Terraria
-         * creates a projectile, rather than through ItemCheck(int).
-         *
-         * The multiplier itself is therefore available through:
-         *
-         *     GetMultiplier(TSPlayer)
-         *
-         * and can safely be used by the projectile hook/IL layer.
-         */
         private int GetPlayerProjectileCount(TSPlayer player)
         {
             return GetMultiplier(player);
@@ -277,7 +267,7 @@ namespace BossProjectileMultiplier
                 return;
             }
 
-            TSPlayer target =
+            TSPlayer? target =
                 FindPlayer(args.Parameters[1]);
 
             if (target == null)
@@ -303,7 +293,7 @@ namespace BossProjectileMultiplier
                 return;
             }
 
-            TSPlayer target =
+            TSPlayer? target =
                 FindPlayer(args.Parameters[1]);
 
             if (target == null)
@@ -319,14 +309,30 @@ namespace BossProjectileMultiplier
             );
         }
 
-        private TSPlayer FindPlayer(string name)
+        private TSPlayer? FindPlayer(string name)
         {
-            TSPlayer[] players =
-                TShock.Utils.FindPlayer(name);
+            IEnumerable<TSPlayer> matches =
+                TShock.Players
+                    .Where(p =>
+                        p != null &&
+                        p.Active &&
+                        (
+                            p.Name.Equals(
+                                name,
+                                StringComparison.OrdinalIgnoreCase
+                            )
+                            ||
+                            p.Name.IndexOf(
+                                name,
+                                StringComparison.OrdinalIgnoreCase
+                            ) >= 0
+                        ));
+
+            TSPlayer[] players = matches.ToArray();
 
             if (players.Length == 0)
             {
-                TShock.Server.SendErrorMessage(
+                TSPlayer.All.SendErrorMessage(
                     $"Player '{name}' was not found."
                 );
 
@@ -335,7 +341,7 @@ namespace BossProjectileMultiplier
 
             if (players.Length > 1)
             {
-                TShock.Server.SendErrorMessage(
+                TSPlayer.All.SendErrorMessage(
                     "Multiple players matched that name."
                 );
 
