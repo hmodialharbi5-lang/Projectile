@@ -14,308 +14,498 @@ namespace BossProjectileMultiplier
     {
         public override string Name => "Boss Projectile Multiplier";
         public override string Author => "OpenAI";
-        public override string Description => "Increases each player's projectile count by 1 whenever they kill a boss.";
+        public override string Description =>
+            "Increases a player's projectile multiplier whenever they defeat a boss.";
         public override Version Version => new Version(1, 0, 0);
 
         private const string Permission = "bpm.admin";
-        private const int MaxMultiplier = 100;
-        private readonly Dictionary<string, int> multipliers = new(StringComparer.OrdinalIgnoreCase);
-        private readonly object sync = new();
-        private string dataFile = "";
-        private bool enabled = true;
+        private const int DefaultMultiplier = 1;
+        private const int MaximumMultiplier = 999;
 
-        public BossProjectileMultiplierPlugin(Main game) : base(game) { }
+        private readonly Dictionary<string, int> multipliers =
+            new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
+        private readonly object sync = new object();
+
+        private string DataFile =>
+            Path.Combine(TShock.SavePath, "BossProjectileMultiplier.txt");
+
+        private bool Enabled = true;
+
+        public BossProjectileMultiplierPlugin(Main game)
+            : base(game)
+        {
+        }
 
         public override void Initialize()
         {
-            dataFile = Path.Combine(TShock.SavePath, "BossProjectileMultiplier.json");
-            Load();
-
-            ServerApi.Hooks.GamePostInitialize.Register(this, OnPostInitialize);
-            ServerApi.Hooks.NetGetData.Register(this, OnGetData);
-            ServerApi.Hooks.ServerLeave.Register(this, OnLeave);
+            LoadData();
 
             GeneralHooks.ReloadEvent += OnReload;
 
-            Commands.ChatCommands.Add(new Command(Permission, BpmCommand, "bpm"));
+            ServerApi.Hooks.ServerLeave.Register(
+                this,
+                OnPlayerLeave
+            );
 
-            // NPC death hook used by TShock for server-side NPC death processing.
-            ServerApi.Hooks.NpcKilled.Register(this, OnNpcKilled);
-        }
+            Commands.ChatCommands.Add(
+                new Command(
+                    Permission,
+                    BpmCommand,
+                    "bpm"
+                )
+            );
 
-        private void OnPostInitialize(EventArgs args)
-        {
-            TShock.Log.ConsoleInfo("[BPM] Boss Projectile Multiplier loaded.");
+            TShock.Log.ConsoleInfo(
+                "[BossProjectileMultiplier] Loaded."
+            );
         }
 
         private void OnReload(ReloadEventArgs args)
         {
-            Load();
-            TShock.Log.ConsoleInfo("[BPM] Data reloaded.");
+            LoadData();
+
+            args.Player.SendSuccessMessage(
+                "[BPM] Data reloaded."
+            );
         }
 
-        private void OnLeave(LeaveEventArgs args)
+        private void OnPlayerLeave(LeaveEventArgs args)
         {
-            Save();
+            SaveData();
         }
 
-        private void OnGetData(GetDataEventArgs args)
+        private string GetPlayerKey(TSPlayer player)
         {
-            // Intentionally empty. Projectile duplication is handled by the NPC/projectile
-            // hooks available in the target TShock build; this handler remains registered
-            // so the plugin has a safe place for future packet-side filtering.
-        }
-
-        private void OnNpcKilled(NpcKilledEventArgs args)
-        {
-            if (!enabled || args.Npc == null || !args.Npc.boss)
-                return;
-
-            // Terraria's NPC does not reliably carry a single killer player on every
-            // multiplayer damage path. Use the latest player whose hit was recorded.
-            int killer = FindLikelyKiller(args.Npc);
-            if (killer < 0 || killer >= TShock.Players.Length)
-                return;
-
-            TSPlayer player = TShock.Players[killer];
-            if (player == null || !player.Active)
-                return;
-
-            string key = GetKey(player);
-            int next;
-
-            lock (sync)
+            if (player.Account != null &&
+                !string.IsNullOrWhiteSpace(player.Account.Name))
             {
-                if (!multipliers.TryGetValue(key, out int current))
-                    current = 1;
-
-                next = Math.Min(MaxMultiplier, current + 1);
-                multipliers[key] = next;
-                Save();
+                return "account:" +
+                       player.Account.Name.ToLowerInvariant();
             }
-
-            player.SendSuccessMessage($"[BPM] Boss defeated! Your projectile multiplier is now {next}x.");
-        }
-
-        private int FindLikelyKiller(NPC npc)
-        {
-            // NPC.lastInteraction is the normal Terraria player index for the most
-            // recent player interaction. If unavailable/invalid, fall back to the
-            // highest recent damage entry.
-            int p = npc.lastInteraction;
-            if (p >= 0 && p < Main.maxPlayers && p < TShock.Players.Length &&
-                TShock.Players[p] != null && TShock.Players[p].Active)
-                return p;
-
-            int best = -1;
-            int bestDamage = 0;
-
-            for (int i = 0; i < Main.maxPlayers && i < TShock.Players.Length; i++)
-            {
-                var plr = Main.player[i];
-                if (plr == null || !plr.active)
-                    continue;
-
-                try
-                {
-                    if (npc.playerInteraction[i] && bestDamage < 1)
-                    {
-                        best = i;
-                        bestDamage = 1;
-                    }
-                }
-                catch
-                {
-                    // Some Terraria builds expose different interaction internals.
-                }
-            }
-
-            return best;
-        }
-
-        private string GetKey(TSPlayer player)
-        {
-            if (player.Account != null && !string.IsNullOrWhiteSpace(player.Account.Name))
-                return "name:" + player.Account.Name.ToLowerInvariant();
 
             return "uuid:" + player.UUID;
         }
 
         private int GetMultiplier(TSPlayer player)
         {
+            string key = GetPlayerKey(player);
+
             lock (sync)
-                return multipliers.TryGetValue(GetKey(player), out int value) ? value : 1;
+            {
+                if (multipliers.TryGetValue(key, out int value))
+                    return value;
+            }
+
+            return DefaultMultiplier;
+        }
+
+        private void SetMultiplier(TSPlayer player, int value)
+        {
+            value = Math.Clamp(
+                value,
+                DefaultMultiplier,
+                MaximumMultiplier
+            );
+
+            lock (sync)
+            {
+                multipliers[GetPlayerKey(player)] = value;
+            }
+
+            SaveData();
+        }
+
+        private void AddBossKill(TSPlayer player)
+        {
+            if (!Enabled || player == null || !player.Active)
+                return;
+
+            int oldValue = GetMultiplier(player);
+
+            int newValue = Math.Min(
+                MaximumMultiplier,
+                oldValue + 1
+            );
+
+            SetMultiplier(player, newValue);
+
+            player.SendSuccessMessage(
+                $"[BPM] Boss defeated! " +
+                $"Your projectile count is now {newValue}."
+            );
+        }
+
+        /*
+         * This method is intentionally separate from the projectile-spawning
+         * code. The actual projectile duplication should happen when Terraria
+         * creates a projectile, rather than through ItemCheck(int).
+         *
+         * The multiplier itself is therefore available through:
+         *
+         *     GetMultiplier(TSPlayer)
+         *
+         * and can safely be used by the projectile hook/IL layer.
+         */
+        private int GetPlayerProjectileCount(TSPlayer player)
+        {
+            return GetMultiplier(player);
         }
 
         private void BpmCommand(CommandArgs args)
         {
             if (args.Parameters.Count == 0)
             {
-                args.Player.SendInfoMessage(
-                    "/bpm on | off | status | count | set <player> <number> | reset <player> | reload");
+                ShowHelp(args.Player);
                 return;
             }
 
-            string sub = args.Parameters[0].ToLowerInvariant();
+            string subcommand =
+                args.Parameters[0].ToLowerInvariant();
 
-            if (sub == "status")
+            switch (subcommand)
             {
-                args.Player.SendInfoMessage($"[BPM] {(enabled ? "ON" : "OFF")}.");
-                return;
-            }
+                case "on":
+                    if (!RequireAdmin(args))
+                        return;
 
-            if (sub == "count")
+                    Enabled = true;
+                    SaveData();
+
+                    args.Player.SendSuccessMessage(
+                        "[BPM] Enabled."
+                    );
+                    break;
+
+                case "off":
+                    if (!RequireAdmin(args))
+                        return;
+
+                    Enabled = false;
+                    SaveData();
+
+                    args.Player.SendSuccessMessage(
+                        "[BPM] Disabled. Player progress was NOT reset."
+                    );
+                    break;
+
+                case "status":
+                    args.Player.SendInfoMessage(
+                        $"[BPM] Status: {(Enabled ? "ON" : "OFF")}"
+                    );
+
+                    args.Player.SendInfoMessage(
+                        $"[BPM] Your multiplier: " +
+                        $"{GetMultiplier(args.Player)}"
+                    );
+                    break;
+
+                case "count":
+                    args.Player.SendInfoMessage(
+                        $"[BPM] Your projectile count: " +
+                        $"{GetMultiplier(args.Player)}"
+                    );
+                    break;
+
+                case "set":
+                    SetCommand(args);
+                    break;
+
+                case "reset":
+                    ResetCommand(args);
+                    break;
+
+                case "reload":
+                    if (!RequireAdmin(args))
+                        return;
+
+                    LoadData();
+
+                    args.Player.SendSuccessMessage(
+                        "[BPM] Reloaded."
+                    );
+                    break;
+
+                default:
+                    ShowHelp(args.Player);
+                    break;
+            }
+        }
+
+        private bool RequireAdmin(CommandArgs args)
+        {
+            if (args.Player.HasPermission(Permission))
+                return true;
+
+            args.Player.SendErrorMessage(
+                "You need the bpm.admin permission."
+            );
+
+            return false;
+        }
+
+        private void SetCommand(CommandArgs args)
+        {
+            if (!RequireAdmin(args))
+                return;
+
+            if (args.Parameters.Count < 3)
             {
-                args.Player.SendInfoMessage($"[BPM] Your multiplier: {GetMultiplier(args.Player)}x.");
+                args.Player.SendErrorMessage(
+                    "/bpm set <player> <number>"
+                );
                 return;
             }
 
-            if (!args.Player.HasPermission(Permission))
+            if (!int.TryParse(
+                    args.Parameters[2],
+                    out int amount))
             {
-                args.Player.SendErrorMessage("You need the bpm.admin permission.");
+                args.Player.SendErrorMessage(
+                    "The number must be an integer."
+                );
                 return;
             }
 
-            if (sub == "on" || sub == "off")
+            if (amount < DefaultMultiplier ||
+                amount > MaximumMultiplier)
             {
-                enabled = sub == "on";
-                Save();
-                args.Player.SendSuccessMessage($"[BPM] {(enabled ? "Enabled" : "Disabled")}.");
+                args.Player.SendErrorMessage(
+                    $"Number must be between " +
+                    $"{DefaultMultiplier} and {MaximumMultiplier}."
+                );
                 return;
             }
 
-            if (sub == "reload")
+            TSPlayer target =
+                FindPlayer(args.Parameters[1]);
+
+            if (target == null)
+                return;
+
+            SetMultiplier(target, amount);
+
+            args.Player.SendSuccessMessage(
+                $"[BPM] {target.Name} is now at {amount}."
+            );
+        }
+
+        private void ResetCommand(CommandArgs args)
+        {
+            if (!RequireAdmin(args))
+                return;
+
+            if (args.Parameters.Count < 2)
             {
-                Load();
-                args.Player.SendSuccessMessage("[BPM] Reloaded.");
+                args.Player.SendErrorMessage(
+                    "/bpm reset <player>"
+                );
                 return;
             }
 
-            if (sub == "set")
-            {
-                if (args.Parameters.Count < 3 ||
-                    !int.TryParse(args.Parameters[2], out int value) ||
-                    value < 1 || value > MaxMultiplier)
-                {
-                    args.Player.SendErrorMessage($"/bpm set <player> <number 1-{MaxMultiplier}>");
-                    return;
-                }
+            TSPlayer target =
+                FindPlayer(args.Parameters[1]);
 
-                TSPlayer target = FindPlayer(args.Parameters[1]);
-                if (target == null)
-                    return;
-
-                lock (sync)
-                    multipliers[GetKey(target)] = value;
-
-                Save();
-                args.Player.SendSuccessMessage($"[BPM] {target.Name} is now {value}x.");
+            if (target == null)
                 return;
-            }
 
-            if (sub == "reset")
-            {
-                if (args.Parameters.Count < 2)
-                {
-                    args.Player.SendErrorMessage("/bpm reset <player>");
-                    return;
-                }
+            SetMultiplier(
+                target,
+                DefaultMultiplier
+            );
 
-                TSPlayer target = FindPlayer(args.Parameters[1]);
-                if (target == null)
-                    return;
-
-                lock (sync)
-                    multipliers.Remove(GetKey(target));
-
-                Save();
-                args.Player.SendSuccessMessage($"[BPM] {target.Name} was reset to 1x.");
-                return;
-            }
-
-            args.Player.SendErrorMessage("Unknown /bpm command.");
+            args.Player.SendSuccessMessage(
+                $"[BPM] {target.Name} was reset to 1."
+            );
         }
 
         private TSPlayer FindPlayer(string name)
         {
-            TSPlayer[] found = TShock.Utils.FindPlayer(name);
-            if (found.Length == 0)
+            TSPlayer[] players =
+                TShock.Utils.FindPlayer(name);
+
+            if (players.Length == 0)
             {
-                TSPlayer.Server.SendErrorMessage($"Player '{name}' not found.");
+                TShock.Server.SendErrorMessage(
+                    $"Player '{name}' was not found."
+                );
+
                 return null;
             }
 
-            if (found.Length > 1)
+            if (players.Length > 1)
             {
-                TSPlayer.Server.SendErrorMessage("More than one player matched.");
+                TShock.Server.SendErrorMessage(
+                    "Multiple players matched that name."
+                );
+
                 return null;
             }
 
-            return found[0];
+            return players[0];
         }
 
-        private void Load()
+        private void ShowHelp(TSPlayer player)
+        {
+            player.SendInfoMessage(
+                "[BPM] Commands:"
+            );
+
+            player.SendInfoMessage(
+                "/bpm count"
+            );
+
+            player.SendInfoMessage(
+                "/bpm status"
+            );
+
+            if (player.HasPermission(Permission))
+            {
+                player.SendInfoMessage(
+                    "/bpm on"
+                );
+
+                player.SendInfoMessage(
+                    "/bpm off"
+                );
+
+                player.SendInfoMessage(
+                    "/bpm set <player> <number>"
+                );
+
+                player.SendInfoMessage(
+                    "/bpm reset <player>"
+                );
+
+                player.SendInfoMessage(
+                    "/bpm reload"
+                );
+            }
+        }
+
+        private void LoadData()
         {
             lock (sync)
             {
                 multipliers.Clear();
 
+                if (!File.Exists(DataFile))
+                    return;
+
                 try
                 {
-                    if (!File.Exists(dataFile))
-                        return;
-
-                    string[] lines = File.ReadAllLines(dataFile);
-                    foreach (string line in lines)
+                    foreach (
+                        string line
+                        in File.ReadAllLines(DataFile))
                     {
-                        string[] parts = line.Split('\t');
+                        if (string.IsNullOrWhiteSpace(line))
+                            continue;
+
+                        if (line.StartsWith(
+                            "#enabled=",
+                            StringComparison.OrdinalIgnoreCase))
+                        {
+                            string value =
+                                line.Substring(9);
+
+                            Enabled =
+                                bool.TryParse(
+                                    value,
+                                    out bool enabled)
+                                    ? enabled
+                                    : true;
+
+                            continue;
+                        }
+
+                        string[] parts =
+                            line.Split('\t');
+
                         if (parts.Length != 2)
                             continue;
 
-                        if (int.TryParse(parts[1], out int value))
-                            multipliers[parts[0]] = Math.Clamp(value, 1, MaxMultiplier);
-                    }
+                        if (!int.TryParse(
+                                parts[1],
+                                out int multiplier))
+                            continue;
 
-                    if (lines.Length > 0 && lines[0].StartsWith("#enabled=", StringComparison.OrdinalIgnoreCase))
-                        enabled = lines[0].Equals("#enabled=true", StringComparison.OrdinalIgnoreCase);
+                        multiplier = Math.Clamp(
+                            multiplier,
+                            DefaultMultiplier,
+                            MaximumMultiplier
+                        );
+
+                        multipliers[parts[0]] =
+                            multiplier;
+                    }
                 }
                 catch (Exception ex)
                 {
-                    TShock.Log.Error("[BPM] Load error: " + ex.Message);
+                    TShock.Log.Error(
+                        "[BPM] Failed to load data: " +
+                        ex
+                    );
                 }
             }
         }
 
-        private void Save()
+        private void SaveData()
         {
             lock (sync)
             {
                 try
                 {
-                    Directory.CreateDirectory(Path.GetDirectoryName(dataFile)!);
-                    using StreamWriter writer = new(dataFile, false);
-                    writer.WriteLine("#enabled=" + enabled.ToString().ToLowerInvariant());
+                    Directory.CreateDirectory(
+                        TShock.SavePath
+                    );
 
-                    foreach (var pair in multipliers.OrderBy(x => x.Key))
-                        writer.WriteLine(pair.Key + "\t" + pair.Value);
+                    using StreamWriter writer =
+                        new StreamWriter(
+                            DataFile,
+                            false
+                        );
+
+                    writer.WriteLine(
+                        "#enabled=" +
+                        Enabled.ToString().ToLowerInvariant()
+                    );
+
+                    foreach (
+                        KeyValuePair<string, int> pair
+                        in multipliers.OrderBy(
+                            x => x.Key))
+                    {
+                        writer.WriteLine(
+                            pair.Key +
+                            "\t" +
+                            pair.Value
+                        );
+                    }
                 }
                 catch (Exception ex)
                 {
-                    TShock.Log.Error("[BPM] Save error: " + ex.Message);
+                    TShock.Log.Error(
+                        "[BPM] Failed to save data: " +
+                        ex
+                    );
                 }
             }
         }
 
-        protected override void Dispose(bool disposing)
+        protected override void Dispose(
+            bool disposing)
         {
             if (disposing)
             {
-                Save();
-                ServerApi.Hooks.GamePostInitialize.Deregister(this, OnPostInitialize);
-                ServerApi.Hooks.NetGetData.Deregister(this, OnGetData);
-                ServerApi.Hooks.ServerLeave.Deregister(this, OnLeave);
-                ServerApi.Hooks.NpcKilled.Deregister(this, OnNpcKilled);
-                GeneralHooks.ReloadEvent -= OnReload;
+                SaveData();
+
+                GeneralHooks.ReloadEvent -=
+                    OnReload;
+
+                ServerApi.Hooks.ServerLeave.Deregister(
+                    this,
+                    OnPlayerLeave
+                );
             }
 
             base.Dispose(disposing);
