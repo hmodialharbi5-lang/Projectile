@@ -11,111 +11,90 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Download repository
+
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install .NET 9
+      - name: Setup .NET 9
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: 9.0.x
+          dotnet-version: "9.0.x"
 
-      - name: Check project files
+      - name: Show project
         run: |
-          echo "===== PROJECT ====="
-          ls -la
-          echo
-          echo "===== SOURCE ====="
-          find . -maxdepth 3 -type f
-          echo
-          echo "===== CS FILE ====="
-          cat BossProjectileMultiplier/BossProjectileMultiplier.cs 2>/dev/null || true
-          cat BossProjectileMultiplier.cs 2>/dev/null || true
+          echo "===== PROJECT FILES ====="
+          find . -maxdepth 3 -type f -print
 
-      - name: Check references
-        run: |
-          echo "===== CSProj ====="
+          echo
+          echo "===== CSPROJ ====="
           cat BossProjectileMultiplier.csproj
-          echo
-          echo "===== LIB ====="
-          ls -lah lib 2>/dev/null || echo "NO LIB FOLDER"
 
-      - name: Restore
+      - name: Restore NuGet packages
         run: |
-          dotnet restore BossProjectileMultiplier.csproj 2>&1 | tee restore.log
-          exit ${PIPESTATUS[0]}
+          dotnet restore BossProjectileMultiplier.csproj
 
-      - name: Build
+      - name: Build plugin
         run: |
-          set +e
-
-          echo "======================================"
-          echo "        BUILDING PLUGIN"
-          echo "======================================"
-
           dotnet build BossProjectileMultiplier.csproj \
-            -c Release \
-            --no-restore \
-            2>&1 | tee build.log
-
-          RESULT=${PIPESTATUS[0]}
-
-          echo
-          echo "======================================"
-          echo "        BUILD RESULT: $RESULT"
-          echo "======================================"
-
-          echo
-          echo "===== ERRORS ONLY ====="
-
-          grep -i "error" build.log || echo "NO ERROR TEXT FOUND"
-
-          echo
-          echo "===== WARNINGS ONLY ====="
-
-          grep -i "warning" build.log || echo "NO WARNING TEXT FOUND"
-
-          echo
-          echo "===== LAST 30 LINES ====="
-
-          tail -n 30 build.log
-
-          exit $RESULT
+            --configuration Release \
+            --no-restore
 
       - name: Find DLL
-        if: success()
+        shell: bash
         run: |
-          echo "===== DLL ====="
+          set -e
 
-          find . \
+          DLL=$(find bin/Release \
             -type f \
             -name "BossProjectileMultiplier.dll" \
-            -print
+            -print -quit)
 
-      - name: Package
-        if: success()
+          if [ -z "$DLL" ]; then
+            echo "::error::BossProjectileMultiplier.dll was not created."
+            echo
+            echo "Build files:"
+            find bin/Release -type f 2>/dev/null || true
+            exit 1
+          fi
+
+          echo "======================================"
+          echo "BUILD SUCCESSFUL"
+          echo "======================================"
+          echo "DLL: $DLL"
+
+      - name: Package plugin
+        shell: bash
         run: |
+          set -e
+
           mkdir -p package/ServerPlugins
 
-          cp "$(find . \
+          DLL=$(find bin/Release \
             -type f \
             -name "BossProjectileMultiplier.dll" \
-            -print -quit)" \
-            package/ServerPlugins/
+            -print -quit)
+
+          cp "$DLL" \
+            package/ServerPlugins/BossProjectileMultiplier.dll
+
+          if [ -f README.txt ]; then
+            cp README.txt package/README.txt
+          fi
 
           cd package
 
-          zip -r ../BossProjectileMultiplier.zip .
+          zip -r \
+            ../BossProjectileMultiplier-TShock6.1.0.zip \
+            .
 
       - name: Upload DLL
-        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: BossProjectileMultiplier-DLL
           path: package/ServerPlugins/BossProjectileMultiplier.dll
 
       - name: Upload ZIP
-        if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: BossProjectileMultiplier
-          path: BossProjectileMultiplier.zip
+          name: BossProjectileMultiplier-TShock6.1.0
+          path: BossProjectileMultiplier-TShock6.1.0.zip
