@@ -17,68 +17,81 @@ jobs:
       - name: Setup .NET 9
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '9.0.x'
+          dotnet-version: "9.0.x"
 
       - name: Download TShock 6.1.0
         shell: bash
         run: |
-          set -euo pipefail
+          set -e
 
           mkdir -p tshock lib
 
-          API="https://api.github.com/repos/Pryaxis/TShock/releases/tags/v6.1.0"
-
-          URL="$(curl -fsSL "$API" \
-            | jq -r '.assets[] | select(.name | endswith(".zip")) | .browser_download_url' \
-            | head -n 1)"
-
-          if [ -z "$URL" ] || [ "$URL" = "null" ]; then
-            echo "Could not find the TShock 6.1.0 release ZIP."
-            exit 1
-          fi
-
-          echo "Downloading: $URL"
-          curl -fL "$URL" -o tshock/tshock.zip
+          curl -fL \
+            "https://github.com/Pryaxis/TShock/releases/download/v6.1.0/TShock-6.1.0-for-Terraria-1.4.5.6.zip" \
+            -o tshock/tshock.zip
 
           unzip -q tshock/tshock.zip -d tshock/server
 
-      - name: Locate TShock assemblies
+      - name: Find assemblies
         shell: bash
         run: |
-          set -euo pipefail
+          set -e
 
-          find tshock/server -type f \( \
-            -name "TShockAPI.dll" -o \
-            -name "TerrariaServer.dll" -o \
-            -name "TerrariaApi.Server.dll" \
-          \) -print
+          echo "Searching for TShock assemblies..."
 
-          for dll in TShockAPI.dll TerrariaServer.dll TerrariaApi.Server.dll; do
-            found="$(find tshock/server -type f -name "$dll" -print -quit)"
-            if [ -z "$found" ]; then
-              echo "Missing required assembly: $dll"
+          find tshock/server -type f \
+            \( -name "TShockAPI.dll" \
+            -o -name "TerrariaServer.dll" \
+            -o -name "TerrariaApi.Server.dll" \) \
+            -print
+
+          for dll in TShockAPI.dll TerrariaServer.dll TerrariaApi.Server.dll
+          do
+            FILE=$(find tshock/server -type f -name "$dll" | head -n 1)
+
+            if [ -z "$FILE" ]; then
+              echo "ERROR: Could not find $dll"
               exit 1
             fi
-            cp "$found" "lib/$dll"
+
+            cp "$FILE" "lib/$dll"
           done
+
+      - name: Restore
+        run: dotnet restore BossProjectileMultiplier.csproj
 
       - name: Build
         run: dotnet build BossProjectileMultiplier.csproj -c Release --no-restore
 
-      - name: Package DLL
+      - name: Check DLL
         shell: bash
         run: |
-          set -euo pipefail
+          set -e
 
-          mkdir -p package/ServerPlugins
+          DLL=$(find bin/Release -type f \
+            -name "BossProjectileMultiplier.dll" \
+            | head -n 1)
 
-          DLL="$(find bin/Release -type f -name "BossProjectileMultiplier.dll" -print -quit)"
           if [ -z "$DLL" ]; then
-            echo "BossProjectileMultiplier.dll was not produced."
+            echo "ERROR: DLL was not created."
             exit 1
           fi
 
-          cp "$DLL" package/ServerPlugins/
+          echo "DLL created:"
+          echo "$DLL"
+
+      - name: Prepare plugin package
+        shell: bash
+        run: |
+          set -e
+
+          mkdir -p package/ServerPlugins
+
+          cp "$(find bin/Release -type f \
+            -name "BossProjectileMultiplier.dll" \
+            | head -n 1)" \
+            package/ServerPlugins/
+
           cp README.txt package/ 2>/dev/null || true
 
           cd package
