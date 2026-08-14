@@ -11,170 +11,111 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-
-      - name: Checkout plugin
+      - name: Download repository
         uses: actions/checkout@v4
 
-      - name: Setup .NET 9
+      - name: Install .NET 9
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: "9.0.x"
+          dotnet-version: 9.0.x
 
-      - name: Clone TShock 6.1.0
+      - name: Check project files
         run: |
-          git clone --recursive --branch v6.1.0 \
-            https://github.com/Pryaxis/TShock.git \
-            TShock
+          echo "===== PROJECT ====="
+          ls -la
+          echo
+          echo "===== SOURCE ====="
+          find . -maxdepth 3 -type f
+          echo
+          echo "===== CS FILE ====="
+          cat BossProjectileMultiplier/BossProjectileMultiplier.cs 2>/dev/null || true
+          cat BossProjectileMultiplier.cs 2>/dev/null || true
 
-      - name: Build TShock 6.1.0
+      - name: Check references
         run: |
-          cd TShock
-          dotnet restore TShock.sln
-          dotnet build TShock.sln \
-            --configuration Release \
-            --no-restore
+          echo "===== CSProj ====="
+          cat BossProjectileMultiplier.csproj
+          echo
+          echo "===== LIB ====="
+          ls -lah lib 2>/dev/null || echo "NO LIB FOLDER"
 
-      - name: Find TShock assemblies
-        shell: bash
+      - name: Restore
         run: |
-          set -e
+          dotnet restore BossProjectileMultiplier.csproj 2>&1 | tee restore.log
+          exit ${PIPESTATUS[0]}
 
-          mkdir -p lib
-
-          echo "Searching for TShockAPI.dll..."
-
-          TSHOCK_API=$(find TShock \
-            -type f \
-            -name "TShockAPI.dll" \
-            -print -quit)
-
-          if [ -z "$TSHOCK_API" ]; then
-            echo "ERROR: TShockAPI.dll not found!"
-            find TShock -type f -name "*.dll" | head -100
-            exit 1
-          fi
-
-          echo "Found:"
-          echo "$TSHOCK_API"
-
-          cp "$TSHOCK_API" lib/TShockAPI.dll
-
-
-          echo "Searching for TerrariaServer.dll..."
-
-          TERRARIA=$(find TShock \
-            -type f \
-            -name "TerrariaServer.dll" \
-            -print -quit)
-
-          if [ -z "$TERRARIA" ]; then
-            echo "ERROR: TerrariaServer.dll not found!"
-            find TShock -type f -name "*.dll" | head -100
-            exit 1
-          fi
-
-          echo "Found:"
-          echo "$TERRARIA"
-
-          cp "$TERRARIA" lib/TerrariaServer.dll
-
-
-          echo "Searching for TerrariaApi.Server.dll..."
-
-          API=$(find TShock \
-            -type f \
-            -name "TerrariaApi.Server.dll" \
-            -print -quit)
-
-          if [ -z "$API" ]; then
-            echo "ERROR: TerrariaApi.Server.dll not found!"
-            find TShock -type f -name "*.dll" | head -100
-            exit 1
-          fi
-
-          echo "Found:"
-          echo "$API"
-
-          cp "$API" lib/TerrariaApi.Server.dll
-
-
-          echo ""
-          echo "===== REFERENCES ====="
-          ls -lh lib/
-
-      - name: Restore plugin
+      - name: Build
         run: |
-          dotnet restore BossProjectileMultiplier.csproj
+          set +e
 
-      - name: Build plugin
-        run: |
+          echo "======================================"
+          echo "        BUILDING PLUGIN"
+          echo "======================================"
+
           dotnet build BossProjectileMultiplier.csproj \
-            --configuration Release \
-            --no-restore
+            -c Release \
+            --no-restore \
+            2>&1 | tee build.log
 
-      - name: Check plugin DLL
-        shell: bash
+          RESULT=${PIPESTATUS[0]}
+
+          echo
+          echo "======================================"
+          echo "        BUILD RESULT: $RESULT"
+          echo "======================================"
+
+          echo
+          echo "===== ERRORS ONLY ====="
+
+          grep -i "error" build.log || echo "NO ERROR TEXT FOUND"
+
+          echo
+          echo "===== WARNINGS ONLY ====="
+
+          grep -i "warning" build.log || echo "NO WARNING TEXT FOUND"
+
+          echo
+          echo "===== LAST 30 LINES ====="
+
+          tail -n 30 build.log
+
+          exit $RESULT
+
+      - name: Find DLL
+        if: success()
         run: |
-          set -e
+          echo "===== DLL ====="
 
-          echo "Searching for plugin DLL..."
-
-          DLL=$(find bin/Release \
+          find . \
             -type f \
             -name "BossProjectileMultiplier.dll" \
-            -print -quit)
+            -print
 
-          if [ -z "$DLL" ]; then
-            echo "ERROR: BossProjectileMultiplier.dll was not created!"
-
-            echo ""
-            echo "Build output:"
-            find bin/Release -type f 2>/dev/null || true
-
-            exit 1
-          fi
-
-          echo ""
-          echo "================================"
-          echo "      BUILD SUCCESSFUL!"
-          echo "================================"
-          echo ""
-          echo "DLL:"
-          echo "$DLL"
-
-      - name: Prepare plugin package
-        shell: bash
+      - name: Package
+        if: success()
         run: |
-          set -e
-
           mkdir -p package/ServerPlugins
 
-          DLL=$(find bin/Release \
+          cp "$(find . \
             -type f \
             -name "BossProjectileMultiplier.dll" \
-            -print -quit)
-
-          cp "$DLL" \
-            package/ServerPlugins/BossProjectileMultiplier.dll
-
-          if [ -f README.txt ]; then
-            cp README.txt package/README.txt
-          fi
+            -print -quit)" \
+            package/ServerPlugins/
 
           cd package
 
-          zip -r \
-            ../BossProjectileMultiplier_TShock6.1.0.zip \
-            .
+          zip -r ../BossProjectileMultiplier.zip .
 
       - name: Upload DLL
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: BossProjectileMultiplier-DLL
           path: package/ServerPlugins/BossProjectileMultiplier.dll
 
-      - name: Upload plugin ZIP
+      - name: Upload ZIP
+        if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: BossProjectileMultiplier-TShock6.1.0
-          path: BossProjectileMultiplier_TShock6.1.0.zip
+          name: BossProjectileMultiplier
+          path: BossProjectileMultiplier.zip
