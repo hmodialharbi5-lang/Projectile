@@ -22,22 +22,38 @@ jobs:
       - name: Download TShock 6.1.0
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
           mkdir -p tshock lib
 
-          curl -fL \
-            "https://github.com/Pryaxis/TShock/releases/download/v6.1.0/TShock-6.1.0-for-Terraria-1.4.5.6.zip" \
-            -o tshock/tshock.zip
+          echo "Getting TShock 6.1.0 release information..."
+
+          URL=$(curl -fsSL \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/Pryaxis/TShock/releases/tags/v6.1.0" \
+            | jq -r '.assets[]
+              | select(.name | endswith(".zip"))
+              | .browser_download_url' \
+            | head -n 1)
+
+          if [ -z "$URL" ] || [ "$URL" = "null" ]; then
+            echo "::error::Could not find a TShock 6.1.0 ZIP asset."
+            exit 1
+          fi
+
+          echo "Downloading:"
+          echo "$URL"
+
+          curl -fL --retry 3 "$URL" -o tshock/tshock.zip
 
           unzip -q tshock/tshock.zip -d tshock/server
 
-      - name: Find assemblies
+      - name: Find TShock assemblies
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
-          echo "Searching for TShock assemblies..."
+          echo "Searching for required DLLs..."
 
           find tshock/server -type f \
             \( -name "TShockAPI.dll" \
@@ -47,55 +63,82 @@ jobs:
 
           for dll in TShockAPI.dll TerrariaServer.dll TerrariaApi.Server.dll
           do
-            FILE=$(find tshock/server -type f -name "$dll" | head -n 1)
+            FILE=$(find tshock/server -type f -name "$dll" -print -quit)
 
             if [ -z "$FILE" ]; then
-              echo "ERROR: Could not find $dll"
+              echo "::error::Could not find $dll"
               exit 1
             fi
+
+            echo "Found $dll:"
+            echo "$FILE"
 
             cp "$FILE" "lib/$dll"
           done
 
+      - name: Show project
+        shell: bash
+        run: |
+          echo "Project files:"
+          find . -maxdepth 3 -type f \
+            \( -name "*.cs" -o -name "*.csproj" \) \
+            -print
+
       - name: Restore
-        run: dotnet restore BossProjectileMultiplier.csproj
+        run: |
+          dotnet restore BossProjectileMultiplier.csproj
 
       - name: Build
-        run: dotnet build BossProjectileMultiplier.csproj -c Release --no-restore
+        run: |
+          dotnet build BossProjectileMultiplier.csproj \
+            --configuration Release \
+            --no-restore
 
       - name: Check DLL
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
+
+          echo "Looking for compiled DLL..."
 
           DLL=$(find bin/Release -type f \
             -name "BossProjectileMultiplier.dll" \
-            | head -n 1)
+            -print -quit)
 
           if [ -z "$DLL" ]; then
-            echo "ERROR: DLL was not created."
+            echo "::error::BossProjectileMultiplier.dll was not created."
+            echo "Build directory:"
+            find bin -type f 2>/dev/null || true
             exit 1
           fi
 
-          echo "DLL created:"
+          echo "SUCCESS!"
+          echo "DLL:"
           echo "$DLL"
 
-      - name: Prepare plugin package
+      - name: Prepare plugin ZIP
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
           mkdir -p package/ServerPlugins
 
-          cp "$(find bin/Release -type f \
+          DLL=$(find bin/Release -type f \
             -name "BossProjectileMultiplier.dll" \
-            | head -n 1)" \
-            package/ServerPlugins/
+            -print -quit)
 
-          cp README.txt package/ 2>/dev/null || true
+          cp "$DLL" \
+            package/ServerPlugins/BossProjectileMultiplier.dll
+
+          if [ -f README.txt ]; then
+            cp README.txt package/README.txt
+          fi
 
           cd package
-          zip -r ../BossProjectileMultiplier_TShock6.1.0.zip .
+
+          zip -r \
+            ../BossProjectileMultiplier_TShock6.1.0.zip \
+            .
 
       - name: Upload DLL
         uses: actions/upload-artifact@v4
