@@ -24,65 +24,131 @@ jobs:
         run: |
           set -euo pipefail
 
-          mkdir -p tshock lib
+          mkdir -p tshock/server
+          mkdir -p lib
 
-          echo "Getting TShock 6.1.0 release information..."
+          echo "Finding TShock 6.1.0 release..."
 
-          URL=$(curl -fsSL \
+          curl -fsSL \
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/Pryaxis/TShock/releases/tags/v6.1.0" \
-            | jq -r '.assets[]
-              | select(.name | endswith(".zip"))
-              | .browser_download_url' \
-            | head -n 1)
+            -o release.json
+
+          echo "Available assets:"
+          jq -r '.assets[].name' release.json
+
+          URL=$(jq -r '
+            .assets[]
+            | select(.name | endswith(".zip"))
+            | .browser_download_url
+          ' release.json | head -n 1)
 
           if [ -z "$URL" ] || [ "$URL" = "null" ]; then
-            echo "::error::Could not find a TShock 6.1.0 ZIP asset."
+            echo "::error::No ZIP asset found for TShock 6.1.0"
             exit 1
           fi
 
           echo "Downloading:"
           echo "$URL"
 
-          curl -fL --retry 3 "$URL" -o tshock/tshock.zip
+          curl -fL --retry 3 "$URL" \
+            -o tshock/tshock.zip
 
-          unzip -q tshock/tshock.zip -d tshock/server
+          echo "Extracting..."
 
-      - name: Find TShock assemblies
+          unzip -q tshock/tshock.zip \
+            -d tshock/server
+
+          echo "Extracted files:"
+          find tshock/server -type f | head -200
+
+      - name: Find TShockAPI.dll
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "Searching for required DLLs..."
+          echo "Searching for TShockAPI.dll..."
 
-          find tshock/server -type f \
-            \( -name "TShockAPI.dll" \
-            -o -name "TerrariaServer.dll" \
-            -o -name "TerrariaApi.Server.dll" \) \
-            -print
+          FILE=$(find tshock/server \
+            -type f \
+            -iname "TShockAPI.dll" \
+            -print -quit)
 
-          for dll in TShockAPI.dll TerrariaServer.dll TerrariaApi.Server.dll
-          do
-            FILE=$(find tshock/server -type f -name "$dll" -print -quit)
+          if [ -z "$FILE" ]; then
+            echo "::error::TShockAPI.dll was not found."
 
-            if [ -z "$FILE" ]; then
-              echo "::error::Could not find $dll"
-              exit 1
-            fi
+            echo ""
+            echo "DLL files that were found:"
+            find tshock/server \
+              -type f \
+              -iname "*.dll" \
+              -print
 
-            echo "Found $dll:"
-            echo "$FILE"
+            exit 1
+          fi
 
-            cp "$FILE" "lib/$dll"
-          done
+          echo "FOUND:"
+          echo "$FILE"
 
-      - name: Show project
+          cp "$FILE" lib/TShockAPI.dll
+
+      - name: Find TerrariaServer.dll
         shell: bash
         run: |
-          echo "Project files:"
-          find . -maxdepth 3 -type f \
-            \( -name "*.cs" -o -name "*.csproj" \) \
-            -print
+          set -euo pipefail
+
+          FILE=$(find tshock/server \
+            -type f \
+            -iname "TerrariaServer.dll" \
+            -print -quit)
+
+          if [ -z "$FILE" ]; then
+            echo "::error::TerrariaServer.dll was not found."
+
+            find tshock/server \
+              -type f \
+              -iname "*.dll" \
+              -print
+
+            exit 1
+          fi
+
+          echo "FOUND:"
+          echo "$FILE"
+
+          cp "$FILE" lib/TerrariaServer.dll
+
+      - name: Find TerrariaApi.Server.dll
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          FILE=$(find tshock/server \
+            -type f \
+            -iname "TerrariaApi.Server.dll" \
+            -print -quit)
+
+          if [ -z "$FILE" ]; then
+            echo "::error::TerrariaApi.Server.dll was not found."
+
+            find tshock/server \
+              -type f \
+              -iname "*.dll" \
+              -print
+
+            exit 1
+          fi
+
+          echo "FOUND:"
+          echo "$FILE"
+
+          cp "$FILE" lib/TerrariaApi.Server.dll
+
+      - name: Show references
+        shell: bash
+        run: |
+          echo "References:"
+          ls -lh lib/
 
       - name: Restore
         run: |
@@ -99,39 +165,43 @@ jobs:
         run: |
           set -euo pipefail
 
-          echo "Looking for compiled DLL..."
-
-          DLL=$(find bin/Release -type f \
-            -name "BossProjectileMultiplier.dll" \
+          DLL=$(find bin/Release \
+            -type f \
+            -iname "BossProjectileMultiplier.dll" \
             -print -quit)
 
           if [ -z "$DLL" ]; then
             echo "::error::BossProjectileMultiplier.dll was not created."
-            echo "Build directory:"
-            find bin -type f 2>/dev/null || true
+
+            echo "Build output:"
+            find bin/Release -type f 2>/dev/null || true
+
             exit 1
           fi
 
-          echo "SUCCESS!"
+          echo "================================"
+          echo "BUILD SUCCESSFUL!"
+          echo "================================"
           echo "DLL:"
           echo "$DLL"
 
-      - name: Prepare plugin ZIP
+      - name: Package DLL
         shell: bash
         run: |
           set -euo pipefail
 
           mkdir -p package/ServerPlugins
 
-          DLL=$(find bin/Release -type f \
-            -name "BossProjectileMultiplier.dll" \
+          DLL=$(find bin/Release \
+            -type f \
+            -iname "BossProjectileMultiplier.dll" \
             -print -quit)
 
           cp "$DLL" \
             package/ServerPlugins/BossProjectileMultiplier.dll
 
           if [ -f README.txt ]; then
-            cp README.txt package/README.txt
+            cp README.txt package/
           fi
 
           cd package
