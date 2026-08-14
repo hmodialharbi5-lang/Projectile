@@ -2,20 +2,18 @@
 
   <PropertyGroup>
     <TargetFramework>net9.0</TargetFramework>
-    <LangVersion>latest</LangVersion>
-
-    <Nullable>disable</Nullable>
-    <ImplicitUsings>enable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
 
     <AssemblyName>BossProjectileMultiplier</AssemblyName>
     <RootNamespace>BossProjectileMultiplier</RootNamespace>
 
-    <OutputPath>bin/Release/</OutputPath>
+    <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
+    <EnableDefaultCompileItems>true</EnableDefaultCompileItems>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="TShock" Version="6.1.0" />
-    <PackageReference Include="TSAPI" Version="6.1.0" />
   </ItemGroup>
 
 </Project>
